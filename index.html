@@ -267,7 +267,7 @@
           <div class="field"><label for="reporter" id="reporter-label" class="field-label"></label><input id="reporter" name="reporter" type="text" maxlength="60" required></div>
           <div class="field"><label for="item" id="item-label"></label><input id="item" name="item" type="text" maxlength="60" required></div>
           <div class="field"><div class="field-label" id="photo-label"></div><label class="upload" id="upload-box" for="photo-input"><span id="upload-content"></span><input id="photo-input" name="photo" type="file" accept="image/png,image/jpeg,image/webp"></label></div>
-          <div class="field video-attachment-picker"><label class="field-label" for="report-video-input">영상 첨부 (선택)</label><input id="report-video-input" name="video" type="file" accept="video/mp4,.mp4"><small class="field-hint">MP4, 최대 12MB · 신고 후 서버에 저장되어 사감이 확인할 수 있어요.</small><div id="report-video-preview"></div></div>
+          <input id="report-video-input" type="file" hidden><div id="report-video-preview" hidden></div>
           <button class="submit" type="submit" id="submit-button"></button>
         </form>
       </section>
@@ -315,16 +315,33 @@
       <section id="student-login-panel" class="view-hidden"></section>
       <form id="staff-code-form" class="view-hidden">
         <div id="staff-school-field"></div>
-        <label class="field-label" for="staff-access-code">사감 접근 코드</label>
-        <input id="staff-access-code" type="password" autocomplete="one-time-code" required>
         <p class="login-error" id="staff-code-error" role="alert"></p>
-        <button class="primary" type="submit">코드 확인 후 입장</button>
+        <button class="primary" type="submit">Google 계정으로 로그인</button>
         <button class="login-back" type="button" id="login-back">모드 선택으로</button>
       </form>
     </div>
   </section>
 
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
   <script>
+    // ===== Firebase 설정: 콘솔 8단계에서 복사한 값으로 아래 중괄호 안을 바꿔 주세요 =====
+    const FIREBASE_CONFIG = {
+      apiKey: "AIzaSyDvex11gidANgUCY0JumfB5LYFpGcIWxUE",
+      authDomain: "dormguard-5b7dc.firebaseapp.com",
+      projectId: "dormguard-5b7dc",
+      storageBucket: "dormguard-5b7dc.firebasestorage.app",
+      messagingSenderId: "624257849429",
+      appId: "1:624257849429:web:ae77bfb1430513e1d39cdc"
+    };
+    // ======================================================================
+    firebase.initializeApp(FIREBASE_CONFIG);
+    const auth = firebase.auth();
+    const db = firebase.firestore();
+    const FieldValue = firebase.firestore.FieldValue;
+    let reportCache = [];
+    let unsubscribers = [];
     function createSafeStorage(storageName) {
       const fallback = new Map();
       let nativeStorage = null;
@@ -343,7 +360,6 @@
           const text = String(value);
           fallback.set(key, text);
           try { if (nativeStorage) nativeStorage.setItem(key, text); } catch {}
-          if (key === 'dormguard-reports-v1' && !applyingSharedReports) window.dispatchEvent(new Event('dormguard-reports-local-change'));
         },
         removeItem(key) {
           fallback.delete(key);
@@ -395,7 +411,7 @@
       date:'사건 날짜', time:'추정 시각', place:'장소',
       choose:'장소를 선택해 주세요', item:'없어진 물건 이름',
       itemHint:'예: 마카롱 2개', photo:'용기 또는 포장지 사진 (선택)',
-      upload:'사진을 첨부해 주세요', fileHelp:'JPG, PNG, WEBP - 최대 2MB',
+      upload:'사진을 첨부해 주세요', fileHelp:'JPG, PNG, WEBP - 자동으로 작게 줄여서 올라가요',
       submit:'신고하기', myReports:'내 신고 현황', archive:'보관함',
       list:'접수된 사건', staffTitle:'사건 조사 대시보드',
       staffIntro:'접수된 사건과 조사 상태를 관리합니다.',
@@ -420,6 +436,7 @@
     let mode = 'student';
     let openId = '';
     let studentTab = 'reports';
+    let openFactCheckId = '';
     let filter = '\uC804\uCCB4';
     function newStudentId() { return window.crypto && crypto.randomUUID ? crypto.randomUUID() : 'student-' + Date.now() + '-' + Math.random().toString(36).slice(2); }
     async function stableStudentId(profile) {
@@ -442,19 +459,8 @@
         if (!response.ok) toast('\uD559\uC0DD \uC815\uBCF4\uB294 \uC800\uC7A5\uD588\uC9C0\uB9CC \uC11C\uBC84 \uB3D9\uAE30\uD654\uAC00 \uC548 \uB410\uC5B4\uC694');
       }).catch(function() { toast('\uD559\uC0DD \uC815\uBCF4\uB294 \uC774 \uAE30\uAE30\uC5D0 \uC800\uC7A5\uD588\uC5B4\uC694. \uC11C\uBC84 \uB3D9\uAE30\uD654\uB294 \uC5F0\uACB0 \uD6C4 \uC9C4\uD589\uB429\uB2C8\uB2E4.'); });
     }
-    let ownerId = (function() {
-      const profile = studentProfile();
-      let id = profile && profile.id || localStore.getItem(OWNER_KEY);
-      if (!id) id = newStudentId();
-      if (profile && !profile.id) { profile.id = id; sessionStore.setItem(STUDENT_PROFILE_KEY, JSON.stringify(profile)); }
-      localStore.setItem(OWNER_KEY, id);
-      return id;
-    })();
-    STUDENTS = [
-      {id:ownerId,name:'\uAE40\uD558\uB298',school:(studentProfile() || {}).school || DEMO_SCHOOL},
-      {id:'demo-a',name:'\uAE40\uD558\uB298',school:DEMO_SCHOOL},
-      {id:'demo-b',name:'\uC774\uC11C\uC724',school:DEMO_SCHOOL}
-    ];
+    let ownerId = '';
+    STUDENTS = [];
     function dateValue(offset) {
       const date = new Date();
       date.setDate(date.getDate() + offset);
@@ -475,125 +481,91 @@
       const school = normalizeSchool(staffSchool());
       return school ? reports().filter(function(report) { return normalizeSchool(report.school) === school; }) : [];
     }
-    function reports() {
-      try { const value = JSON.parse(localStore.getItem(KEY) || '[]'); return Array.isArray(value) ? value : []; }
-      catch { return []; }
-    }
+    function reports() { return reportCache; }
     function reportRole() {
       return sessionStore.getItem(LOGIN_ROLE_KEY) === 'staff' ? 'staff' : 'student';
     }
     function reportSchool() {
       return reportRole() === 'staff' ? staffSchool() : ((studentProfile() || {}).school || '');
     }
-    function recordSnapshot(list) {
-      lastReportSnapshot = new Map(list.map(function(report) { return [report.id, JSON.stringify(report)]; }));
+    function recordSnapshot() {}
+    function stopSync() {
+      unsubscribers.forEach(function(stop) { try { stop(); } catch {} });
+      unsubscribers = [];
     }
-    async function refreshSharedReports() {
-      const role = reportRole(), school = reportSchool();
-      if (!school) return;
-      const params = new URLSearchParams({ role: role, school: school });
-      if (role === 'student') params.set('ownerId', ownerId);
-      try {
-        const headers = role === 'staff' ? { 'x-dormguard-staff-code': staffAccessCode() } : {};
-        const response = await fetch(apiUrl('/api/reports?') + params.toString(), { headers: headers, cache: 'no-store' });
-        if (!response.ok) return;
-        const payload = await response.json();
-        if (!Array.isArray(payload.reports)) return;
-        if (role === 'student' && Array.isArray(payload.factCheckRequests)) {
-          factCheckInbox.clear();
-          payload.factCheckRequests.forEach(function(request) { factCheckInbox.set(request.id, request); });
-        }
-        const current = reports(), byId = new Map(current.map(function(report) { return [report.id, report]; }));
-        const serverIds = new Set(payload.reports.map(function(report) { return report.id; }));
-        const changedLocal = new Map(current.filter(function(report) {
-          const inScope = role === 'staff' ? normalizeSchool(report.school) === normalizeSchool(school) : report.reporterId === ownerId && normalizeSchool(report.school) === normalizeSchool(school);
-          return inScope && lastReportSnapshot.get(report.id) !== JSON.stringify(report);
-        }).map(function(report) { return [report.id, report]; }));
-        const localOnly = current.filter(function(report) {
-          const inScope = role === 'staff' ? normalizeSchool(report.school) === normalizeSchool(school) : report.reporterId === ownerId && normalizeSchool(report.school) === normalizeSchool(school);
-          return inScope && !serverIds.has(report.id) && !report.demo;
-        });
-        let statusChanged = false, openReportChanged = false;
-        payload.reports.forEach(function(report) {
-          const previous = byId.get(report.id);
-          if (role === 'student' && previous && previous.reporterId === ownerId && previous.status !== report.status && !isClosed(report.status)) statusChanged = true;
-          if (report.id === openId && (!previous || JSON.stringify(previous) !== JSON.stringify(report))) openReportChanged = true;
-          byId.set(changedLocal.get(report.id) || report);
-        });
-        const merged = Array.from(byId.values());
-        applyingSharedReports = true;
-        localStore.setItem(KEY, JSON.stringify(merged));
-        applyingSharedReports = false;
-        recordSnapshot(merged);
-        const retryLocal = new Map(localOnly.map(function(report) { return [report.id, report]; }));
-        changedLocal.forEach(function(report, id) { if (serverIds.has(id)) retryLocal.set(id, report); });
-        retryLocal.forEach(function(report) {
-          pushSharedReport(report).then(function(saved) {
-            if (saved) lastReportSnapshot.set(report.id, JSON.stringify(report));
-            else lastReportSnapshot.delete(report.id);
-          });
-        });
-        if (role === 'student') { renderStudent(); if (statusChanged) toast('\uC9C4\uD589 \uC0C1\uD0DC\uAC00 \uC5C5\uB370\uC774\uD2B8\uB410\uC5B4\uC694'); }
-        else if (mode === 'staff') {
-          if (openId) {
-            if (openReportChanged) { const report = staffReports().find(function(item) { return item.id === openId; }); if (report) renderDetail(report); else renderStaffList(); }
-          } else renderStaffList();
-          showStaffCancelAlert(); showStaffAnswerToast(); refreshStudentRoster();
-        }
-      } catch { applyingSharedReports = false; }
+    function snapshotList(snapshot) {
+      return snapshot.docs.map(function(doc) { return Object.assign({ id: doc.id }, doc.data()); });
     }
-    async function pushSharedReport(report) {
-      const role = reportRole(), school = reportSchool();
-      if (!school || normalizeSchool(report.school) !== normalizeSchool(school)) return false;
-      const headers = { 'Content-Type': 'application/json' };
-      if (role === 'staff') headers['x-dormguard-staff-code'] = staffAccessCode();
-      try {
-        const response = await fetch(apiUrl('/api/reports'), { method: 'POST', headers: headers, body: JSON.stringify({ role: role, ownerId: ownerId, school: school, report: report }) });
-        if (!response.ok) toast('\uC11C\uBC84\uC5D0 \uC2E0\uACE0 \uC815\uBCF4\uB97C \uC800\uC7A5\uD558\uC9C0 \uBABB\uD588\uC5B4\uC694');
-        return response.ok;
-      } catch { toast('\uC11C\uBC84\uC5D0 \uC5F0\uACB0\uD560 \uC218 \uC5C6\uC5B4 \uC800\uC7A5\uD558\uC9C0 \uBABB\uD588\uC5B4\uC694'); return false; }
-    }
-    async function refreshStudentRoster() {
-      if (reportRole() !== 'staff' || !staffSchool()) return;
-      try {
-        const response = await fetch(apiUrl('/api/students?school=') + encodeURIComponent(staffSchool()), { headers: { 'x-dormguard-staff-code': staffAccessCode() }, cache: 'no-store' });
-        if (!response.ok) return;
-        const payload = await response.json();
-        if (!Array.isArray(payload.students)) return;
-        STUDENTS = payload.students.slice();
-        staffReports().forEach(function(report) {
-          if (report.reporterId && report.reporterName && !STUDENTS.some(function(student) { return student.id === report.reporterId; })) {
-            STUDENTS.push({id:report.reporterId,name:report.reporterName,school:report.school});
-          }
+    function applyReports(list) {
+      const previous = new Map(reportCache.map(function(report) { return [report.id, JSON.stringify(report)]; }));
+      const previousStatus = new Map(reportCache.map(function(report) { return [report.id, report.status]; }));
+      reportCache = list;
+      if (reportRole() === 'student') {
+        const statusChanged = list.some(function(report) {
+          return report.reporterId === ownerId && previousStatus.has(report.id) && previousStatus.get(report.id) !== report.status && !isClosed(report.status);
         });
-      } catch {}
+        renderStudent();
+        if (statusChanged) toast('진행 상태가 업데이트됐어요');
+      } else if (mode === 'staff') {
+        if (openId) {
+          const report = staffReports().find(function(item) { return item.id === openId; });
+          if (!report) { openId = ''; renderStaffList(); }
+          else if (previous.get(openId) !== JSON.stringify(report)) renderDetail(report);
+        } else renderStaffList();
+        showStaffCancelAlert(); showStaffAnswerToast();
+      }
     }
+    function syncError(error) {
+      console.error(error);
+      toast('서버와 연결하지 못했어요. 잠시 후 다시 시도해 주세요.');
+    }
+    function refreshStudentRoster() {}
     function startReportSync() {
-      if (reportEventStream) reportEventStream.close();
-      clearInterval(reportPollTimer);
-      const school = reportSchool();
-      if (!school) return;
-      reportEventStream = new EventSource(apiUrl('/api/report-events?school=') + encodeURIComponent(school));
-      reportEventStream.addEventListener('reports-updated', function() { refreshSharedReports(); if (reportRole() === 'staff') refreshStudentRoster(); });
-      refreshSharedReports();
-      if (reportRole() === 'staff') refreshStudentRoster();
-      reportPollTimer = setInterval(refreshSharedReports, 2500);
+      stopSync();
+      const role = reportRole(), school = reportSchool();
+      if (!school || !auth.currentUser) return;
+      if (role === 'staff') {
+        unsubscribers.push(db.collection('reports').where('school', '==', school).onSnapshot(function(snapshot) {
+          applyReports(snapshotList(snapshot));
+        }, syncError));
+        unsubscribers.push(db.collection('students').where('school', '==', school).onSnapshot(function(snapshot) {
+          STUDENTS = snapshotList(snapshot).map(function(student) { return { id: student.id, name: student.name, school: student.school }; });
+        }, syncError));
+      } else {
+        let own = [], asked = [];
+        const merge = function() {
+          const byId = new Map();
+          own.concat(asked).forEach(function(report) { byId.set(report.id, report); });
+          applyReports(Array.from(byId.values()).sort(function(a, b) { return new Date(b.createdAt || 0) - new Date(a.createdAt || 0); }));
+        };
+        unsubscribers.push(db.collection('reports').where('reporterId', '==', ownerId).onSnapshot(function(snapshot) { own = snapshotList(snapshot); merge(); }, syncError));
+        unsubscribers.push(db.collection('reports').where('factCheck.targetId', '==', ownerId).onSnapshot(function(snapshot) { asked = snapshotList(snapshot); merge(); }, syncError));
+      }
     }
-    window.addEventListener('dormguard-reports-local-change', function() {
-      if (applyingSharedReports) return;
-      clearTimeout(reportSyncTimer);
-      reportSyncTimer = setTimeout(function() {
-        const current = reports();
-        current.forEach(function(report) {
-          if (lastReportSnapshot.get(report.id) !== JSON.stringify(report)) {
-            pushSharedReport(report).then(function(saved) {
-              if (saved) lastReportSnapshot.set(report.id, JSON.stringify(report));
-              else lastReportSnapshot.delete(report.id);
-            });
-          }
+    function writeReport(id, fields, auditText) {
+      const at = new Date().toISOString();
+      const payload = Object.assign({}, fields, { updatedAt: at });
+      const entry = { action: auditText, at: at };
+      if (auditText) payload.auditTrail = FieldValue.arrayUnion(entry);
+      const local = reportCache.find(function(item) { return item.id === id; });
+      if (local) {
+        Object.keys(fields).forEach(function(key) {
+          const value = fields[key], parts = key.split('.');
+          let target = local;
+          for (let i = 0; i < parts.length - 1; i++) { target[parts[i]] = target[parts[i]] || {}; target = target[parts[i]]; }
+          const last = parts[parts.length - 1];
+          if (value === DELETE_FIELD) delete target[last]; else target[last] = value;
         });
-      }, 80);
-    });
+        if (auditText) local.auditTrail = [entry].concat(Array.isArray(local.auditTrail) ? local.auditTrail : []);
+        local.updatedAt = at;
+      }
+      const remote = {};
+      Object.keys(payload).forEach(function(key) { remote[key] = payload[key] === DELETE_FIELD ? FieldValue.delete() : payload[key]; });
+      return db.collection('reports').doc(id).update(remote).then(function() { return true; }).catch(function(error) {
+        console.error(error); toast('저장하지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.'); return false;
+      });
+    }
+    const DELETE_FIELD = { __delete: true };
     function mapValue(key) {
       try { const value = JSON.parse(localStore.getItem(key) || '{}'); return value && typeof value === 'object' ? value : {}; }
       catch { return {}; }
@@ -625,27 +597,13 @@
       });
       if (dirty) localStore.setItem(KEY, JSON.stringify(all));
     }
-    function audit(reportId, text) {
-      let entries = [];
-      try { entries = JSON.parse(localStore.getItem(AUDIT_KEY) || '[]'); } catch {}
-      if (!Array.isArray(entries)) entries = [];
-      const entry = {reportId:reportId,action:text,at:new Date().toISOString()};
-      entries.unshift(entry);
-      localStore.setItem(AUDIT_KEY, JSON.stringify(entries));
-      const all = reports(), report = all.find(function(item) { return item.id === reportId; });
-      if (report) {
-        report.auditTrail = Array.isArray(report.auditTrail) ? report.auditTrail : [];
-        report.auditTrail.unshift({action:entry.action,at:entry.at});
-        report.updatedAt = entry.at;
-        localStore.setItem(KEY, JSON.stringify(all));
-      }
-    }
+    function audit(reportId, text) { return writeReport(reportId, {}, text); }
     function auditFor(reportId) {
       let entries = []; try { entries = JSON.parse(localStore.getItem(AUDIT_KEY) || '[]'); } catch {}
       const legacy = Array.isArray(entries) ? entries.filter(function(entry) { return entry.reportId === reportId; }) : [];
       const report = reports().find(function(item) { return item.id === reportId; });
       const all = (Array.isArray(report && report.auditTrail) ? report.auditTrail : []).concat(legacy);
-      return all.filter(function(entry, index) { return all.findIndex(function(other) { return other.at === entry.at && other.action === entry.action; }) === index; });
+      return all.filter(function(entry, index) { return all.findIndex(function(other) { return other.at === entry.at && other.action === entry.action; }) === index; }).sort(function(a, b) { return new Date(b.at) - new Date(a.at); });
     }
     function toast(message) {
       const el = document.querySelector('#toast'); el.textContent = message; el.classList.add('show');
@@ -786,20 +744,10 @@
       });
     }
     async function submitFactCheckAnswerLive(id, answer) {
-      const request = factCheckInbox.get(id) || reports().find(function(item) { return item.id === id && item.factCheck && item.factCheck.targetId === ownerId; });
+      const request = reports().find(function(item) { return item.id === id && item.factCheck && item.factCheck.targetId === ownerId; });
       if (!request || request.factCheck.status === 'answered' || !answer) return;
-      try {
-        const response = await fetch(apiUrl('/api/fact-check-answer'), {
-          method:'POST', headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({reportId:id,ownerId:ownerId,answer:answer})
-        });
-        const payload = await response.json();
-        if (!response.ok || !payload.request) throw new Error(payload.error || '\uB2F5\uBCC0\uC744 \uC800\uC7A5\uD558\uC9C0 \uBABB\uD588\uC5B4\uC694.');
-        factCheckInbox.set(id, payload.request);
-        audit(id, '\uD559\uC0DD\uC774 \uC11C\uBA74 \uB2F5\uBCC0\uC744 \uC81C\uCD9C');
-        renderFactChecks();
-        toast('\uB2F5\uBCC0\uC774 \uC81C\uCD9C\uB410\uC5B4\uC694');
-      } catch (error) { toast(error.message || '\uB2F5\uBCC0\uC744 \uC800\uC7A5\uD558\uC9C0 \uBABB\uD588\uC5B4\uC694.'); }
+      const saved = await writeReport(id, { 'factCheck.answer': answer, 'factCheck.status': 'answered', 'factCheck.answeredAt': new Date().toISOString() }, '학생이 서면 답변을 제출');
+      if (saved) { renderFactChecks(); toast('답변이 제출됐어요'); }
     }
     function submitFactCheckAnswer(id, answer) {
       const all = reports(), report = all.find(function(item) { return item.id === id && item.factCheck && item.factCheck.targetId === ownerId; });
@@ -930,7 +878,7 @@
         : next ? '<button class=\"primary\" type=\"button\" id=\"next-status\">다음 단계: ' + esc(next) + '</button>' : '<div class=\"cancel-note\">' + (status === CANCELLED ? CANCELLED : '처리가 완료된 사건입니다.') + '</div>';
       const request = report.factCheck ? '<div class=\"result-box\"><strong>사실 확인 요청 내용</strong><br>' + esc(report.factCheck.targetName) + ' - ' + esc(report.factCheck.question) + '<div class=\"field-hint\">답변: ' + (report.factCheck.status === 'answered' ? esc(report.factCheck.answer || '') : '답변 대기') + '</div></div>' : '';
       const askButton = !isClosed(status) && status !== CANCELLED ? '<button class=\"primary\" type=\"button\" id=\"show-fact-check\" style=\"margin-top:9px\">사실 확인 요청</button><form id=\"fact-check-form\" class=\"view-hidden\" style=\"margin-top:12px\"><label class=\"field-label\" for=\"fact-target\">대상 학생</label><select id=\"fact-target\" required>' + STUDENTS.filter(function(student) { return normalizeSchool(student.school) === normalizeSchool(staffSchool()); }).map(function(student) { return '<option value=\"' + esc(student.id) + '\">' + esc(student.name) + '</option>'; }).join('') + '</select><label class=\"field-label\" for=\"fact-question\" style=\"margin-top:12px\">질문</label><textarea id=\"fact-question\" maxlength=\"1200\" required></textarea><small class=\"field-hint\">유도 질문은 피하고, 확인된 사실과 열린 질문만 작성해 주세요. 예: “왜 숨겨서 가져갔나요?”</small><button class=\"primary\" type=\"submit\" style=\"margin-top:9px\">요청 보내기</button></form>' : '';
-      detail.innerHTML = '<button type=\"button\" class=\"detail-back\" id=\"detail-back\">사건 목록</button><h2 class=\"detail-title\">' + esc(report.item) + '</h2><p class=\"detail-subtitle\">' + esc(report.date) + ' - ' + esc(report.place) + '</p><section class=\"detail-card\"><h3>신고 내용</h3><dl class=\"detail-grid\"><dt>신고자</dt><dd>' + esc(report.reporterName || '정보 없음') + '</dd><dt>장소</dt><dd>' + esc(report.place) + '</dd><dt>추정 일시</dt><dd>' + esc(report.date) + ' ' + esc(report.time) + '</dd><dt>없어진 물건</dt><dd>' + esc(report.item) + '</dd>' + (report.photo ? '<dt>첨부 사진</dt><dd><img class=\"report-photo\" src=\"' + report.photo + '\" alt=\"신고 첨부 사진\"></dd>' : '') + '</dl></section><section class=\"detail-card\"><h3>CCTV 예시 캡처</h3><p class=\"demo-disclaimer\">실제 CCTV 연동 없음 - 예시 캡처</p><div class=\"cctv-grid\">' + captures + '</div>' + videoAnalysisHtml(report) + '</section><section class=\"detail-card\"><h3>사건 상태</h3><p class=\"detail-subtitle\">' + esc(statusLabel(status)) + '</p>' + result + control + request + askButton + '</section><section class=\"detail-card\"><h3>감사 로그</h3>' + logHtml + '</section>';
+      detail.innerHTML = '<button type=\"button\" class=\"detail-back\" id=\"detail-back\">사건 목록</button><h2 class=\"detail-title\">' + esc(report.item) + '</h2><p class=\"detail-subtitle\">' + esc(report.date) + ' - ' + esc(report.place) + '</p><section class=\"detail-card\"><h3>신고 내용</h3><dl class=\"detail-grid\"><dt>신고자</dt><dd>' + esc(report.reporterName || '정보 없음') + '</dd><dt>장소</dt><dd>' + esc(report.place) + '</dd><dt>추정 일시</dt><dd>' + esc(report.date) + ' ' + esc(report.time) + '</dd><dt>없어진 물건</dt><dd>' + esc(report.item) + '</dd>' + (report.photo ? '<dt>첨부 사진</dt><dd><img class=\"report-photo\" src=\"' + report.photo + '\" alt=\"신고 첨부 사진\"></dd>' : '') + '</dl></section><section class=\"detail-card\"><h3>사건 상태</h3><p class=\"detail-subtitle\">' + esc(statusLabel(status)) + '</p>' + result + control + request + askButton + '</section><section class=\"detail-card\"><h3>감사 로그</h3>' + logHtml + '</section>';
       if (report.video) {
         const attachment = document.createElement('section'); attachment.className = 'detail-card';
         const title = document.createElement('h3'); title.textContent = '신고 첨부 영상';
@@ -1056,34 +1004,31 @@
       document.querySelector('#staff-detail-view').classList.remove('view-hidden');
       renderDetail(report);
     }
-    function changeStatus(id, next, resultText) {
-      const all = reports(), report = staffReports().find(function(item) { return item.id === id; });
+    async function changeStatus(id, next, resultText) {
+      const report = staffReports().find(function(item) { return item.id === id; });
       if (!report || stageIndex(next) !== stageIndex(report.status || STEPS[0]) + 1) return;
       if (next === CLOSED && !String(resultText || '').trim()) return;
-      report.status = next;
-      if (next === CLOSED) { report.result = String(resultText).trim(); report.resultAt = new Date().toISOString(); }
-      try { localStore.setItem(KEY, JSON.stringify(all)); audit(id, '사감이 단계를 ' + statusLabel(next) + '로 변경'); }
-      catch { toast(COPY.storage); return; }
-      renderDetail(report); renderStaffList();
+      const fields = { status: next };
+      if (next === CLOSED) { fields.result = String(resultText).trim(); fields.resultAt = new Date().toISOString(); }
+      await writeReport(id, fields, '사감이 단계를 ' + statusLabel(next) + '로 변경');
+      const updated = staffReports().find(function(item) { return item.id === id; }) || report;
+      renderDetail(updated); renderStaffList();
       document.querySelector('#staff-filters').classList.add('view-hidden');
       document.querySelector('#staff-case-list').classList.add('view-hidden');
       document.querySelector('#staff-detail-view').classList.remove('view-hidden');
     }
-    function submitFactCheck(id, targetValue, question) {
-      const all = reports(), report = staffReports().find(function(item) { return item.id === id; });
+    async function submitFactCheck(id, targetValue, question) {
+      const report = staffReports().find(function(item) { return item.id === id; });
       const targetName = String(targetValue || '').trim();
       const target = STUDENTS.find(function(student) {
         return normalizeSchool(student.school) === normalizeSchool(staffSchool()) && (student.id === targetName || normalizeStudentName(student.name) === normalizeStudentName(targetName));
       });
       if (!report || !targetName || !question) return;
-      const sentAt = new Date().toISOString();
-      report.status = FACT_CHECK;
-      report.factCheck = {targetId:target ? target.id : 'pending-name:' + normalizeSchool(targetName),targetName:target ? target.name : targetName,question:question,status:'pending',sentAt:sentAt};
-      try {
-        localStore.setItem(KEY, JSON.stringify(all));
-        audit(id, '사감이 ' + report.factCheck.targetName + '에게 사실 확인 요청을 보냄');
-      } catch { toast(COPY.storage); return; }
-      renderDetail(report); renderStaffList();
+      if (!target) { toast('그 이름으로 등록된 학생이 없어요. 학생이 앱에 먼저 정보를 등록해야 요청을 받을 수 있어요.'); return; }
+      const factCheck = { targetId: target.id, targetName: target.name, question: question, status: 'pending', sentAt: new Date().toISOString() };
+      await writeReport(id, { status: FACT_CHECK, factCheck: factCheck }, '사감이 ' + target.name + '에게 사실 확인 요청을 보냄');
+      const updated = staffReports().find(function(item) { return item.id === id; }) || report;
+      renderDetail(updated); renderStaffList();
       document.querySelector('#staff-filters').classList.add('view-hidden');
       document.querySelector('#staff-case-list').classList.add('view-hidden');
       document.querySelector('#staff-detail-view').classList.remove('view-hidden');
@@ -1099,22 +1044,20 @@
         localStore.setItem(STAFF_SEEN_KEY, JSON.stringify(current)); showStaffCancelAlert();
       });
     }
-    function cancelReport(id) {
-      const all = reports(), report = all.find(function(item) { return item.id === id && item.reporterId === ownerId; });
+    async function cancelReport(id) {
+      const report = reports().find(function(item) { return item.id === id && item.reporterId === ownerId; });
       if (!report || report.status === CANCELLED || isClosed(report.status)) return;
       if (!window.confirm('이 신고를 보관함으로 옮길까요?')) return;
-      report.statusBeforeCancel = report.status || STEPS[0]; report.status = CANCELLED; report.cancelledAt = new Date().toISOString();
-      try { localStore.setItem(KEY, JSON.stringify(all)); audit(id, '학생이 신고를 취소'); renderStudent(); toast('신고가 보관함으로 옮겨졌어요.'); }
-      catch { toast(COPY.storage); }
+      const saved = await writeReport(id, { statusBeforeCancel: report.status || STEPS[0], status: CANCELLED, cancelledAt: new Date().toISOString() }, '학생이 신고를 취소');
+      renderStudent(); if (saved) toast('신고가 보관함으로 옮겨졌어요.');
     }
-    function restoreReport(id) {
-      const all = reports(), report = all.find(function(item) { return item.id === id && item.reporterId === ownerId && item.status === CANCELLED; });
+    async function restoreReport(id) {
+      const report = reports().find(function(item) { return item.id === id && item.reporterId === ownerId && item.status === CANCELLED; });
       if (!report) return;
       const cancelledAt = new Date(report.cancelledAt || 0).getTime(), expires = cancelledAt + 7*24*60*60*1000;
       if (!cancelledAt || Date.now() > expires) { renderStudent(); return; }
-      report.status = report.statusBeforeCancel || STEPS[0]; delete report.statusBeforeCancel; delete report.cancelledAt;
-      try { localStore.setItem(KEY, JSON.stringify(all)); audit(id, '학생이 취소한 신고를 복원'); renderStudent(); toast('신고를 복원했어요.'); }
-      catch { toast(COPY.storage); }
+      const saved = await writeReport(id, { status: report.statusBeforeCancel || STEPS[0], statusBeforeCancel: DELETE_FIELD, cancelledAt: DELETE_FIELD }, '학생이 취소한 신고를 복원');
+      renderStudent(); if (saved) toast('신고를 복원했어요.');
     }
     function setMode(nextMode) {
       mode = nextMode; const staff = mode === 'staff';
@@ -1146,27 +1089,12 @@
       if (role === 'student' && !studentProfile()) { showStudentLogin(); return; }
       if (role === 'staff' && !staffSchool()) { showStaffCodeGate(); return; }
       if (role === 'student') {
+        ownerId = auth.currentUser ? auth.currentUser.uid : '';
         const profile = studentProfile();
-        const previousId = ownerId;
-        const stableId = await stableStudentId(profile);
-        if (previousId !== stableId) {
-          const all = reports();
-          all.forEach(function(report) {
-            if (report.reporterId === previousId) report.reporterId = stableId;
-            if (report.factCheck && report.factCheck.targetId === previousId) report.factCheck.targetId = stableId;
-          });
-          localStore.setItem(KEY, JSON.stringify(all));
-          recordSnapshot(all);
-        }
-        ownerId = stableId;
         profile.id = ownerId;
         sessionStore.setItem(STUDENT_PROFILE_KEY, JSON.stringify(profile));
-        STUDENTS[0] = {id:ownerId,name:profile.name,school:profile.school};
-        sessionStore.setItem(LOGIN_ROLE_KEY, role);
-        persistStudentProfile(profile, previousId);
-      } else {
-        sessionStore.setItem(LOGIN_ROLE_KEY, role);
       }
+      sessionStore.setItem(LOGIN_ROLE_KEY, role);
       document.body.classList.add('authenticated');
       document.querySelector('#login-gate').classList.add('view-hidden');
       document.querySelector('#staff-code-error').textContent = '';
@@ -1182,7 +1110,7 @@
     }
     function showStudentProfile() {
       const panel = document.querySelector('#student-login-panel');
-      panel.innerHTML = '<form id="student-profile-form"><h3 class="login-section-title">\uD559\uC0DD \uC778\uC801\uC0AC\uD56D</h3><p class="login-privacy">\uC778\uC801\uC0AC\uD56D\uC744 \uC785\uB825\uD558\uBA74 \uB4F1\uB85D\uD558\uC2E0 \uD559\uAD50 \uC0AC\uAC74\uC5D0 \uCC38\uC5EC\uD560 \uC218 \uC788\uC5B4\uC694. \uC815\uBCF4\uB294 \uC774 \uAE30\uAE30\uC640 \uC571 \uC11C\uBC84\uC5D0 \uC800\uC7A5\uB429\uB2C8\uB2E4.</p><div class="field"><label class="field-label" for="student-name">\uC774\uB984</label><input id="student-name" maxlength="60" autocomplete="name" required></div><div class="field"><label class="field-label" for="student-school">\uC18C\uC18D \uD559\uAD50</label><input id="student-school" maxlength="80" required></div><div class="profile-grid"><div class="field"><label class="field-label" for="student-grade">\uD559\uB144</label><select id="student-grade" required><option value="">\uC120\uD0DD</option><option>1\uD559\uB144</option><option>2\uD559\uB144</option><option>3\uD559\uB144</option></select></div><div class="field"><label class="field-label" for="student-class">\uBC18</label><input id="student-class" type="number" min="1" max="30" required></div><div class="field"><label class="field-label" for="student-number">\uBC88\uD638</label><input id="student-number" type="number" min="1" max="60" required></div></div><div class="profile-grid"><div class="field"><label class="field-label" for="student-building">\uAE30\uC219\uC0AC \uB3D9</label><select id="student-building" required><option value="">\uC120\uD0DD</option><option>C\uB3D9</option><option>D\uB3D9</option></select></div><div class="field"><label class="field-label" for="student-room">\uD638\uC218</label><input id="student-room" inputmode="numeric" maxlength="8" placeholder="\uC608: 302" required></div></div><button class="primary" type="submit">\uC815\uBCF4 \uC800\uC7A5 \uD6C4 \uC785\uC7A5</button><button class="login-back" type="button" data-login-back="roles">\uB2E4\uB978 \uC5ED\uD560 \uC120\uD0DD</button></form>';
+      panel.innerHTML = '<form id="student-profile-form"><h3 class="login-section-title">\uD559\uC0DD \uC778\uC801\uC0AC\uD56D</h3><p class="login-privacy">\uC778\uC801\uC0AC\uD56D\uC744 \uC785\uB825\uD558\uBA74 \uB4F1\uB85D\uD558\uC2E0 \uD559\uAD50 \uC0AC\uAC74\uC5D0 \uCC38\uC5EC\uD560 \uC218 \uC788\uC5B4\uC694. \uC815\uBCF4\uB294 \uC774 \uAE30\uAE30\uC640 \uC571 \uC11C\uBC84\uC5D0 \uC800\uC7A5\uB429\uB2C8\uB2E4.</p><div class="field"><label class="field-label" for="student-name">\uC774\uB984</label><input id="student-name" maxlength="60" autocomplete="name" required></div><div class="field"><label class="field-label" for="student-school">\uC18C\uC18D \uD559\uAD50</label><select id="student-school" required><option>' + DEMO_SCHOOL + '</option></select></div><div class="profile-grid"><div class="field"><label class="field-label" for="student-grade">\uD559\uB144</label><select id="student-grade" required><option value="">\uC120\uD0DD</option><option>1\uD559\uB144</option><option>2\uD559\uB144</option><option>3\uD559\uB144</option></select></div><div class="field"><label class="field-label" for="student-class">\uBC18</label><input id="student-class" type="number" min="1" max="30" required></div><div class="field"><label class="field-label" for="student-number">\uBC88\uD638</label><input id="student-number" type="number" min="1" max="60" required></div></div><div class="profile-grid"><div class="field"><label class="field-label" for="student-building">\uAE30\uC219\uC0AC \uB3D9</label><select id="student-building" required><option value="">\uC120\uD0DD</option><option>C\uB3D9</option><option>D\uB3D9</option></select></div><div class="field"><label class="field-label" for="student-room">\uD638\uC218</label><input id="student-room" inputmode="numeric" maxlength="8" placeholder="\uC608: 302" required></div></div><button class="primary" type="submit">\uC815\uBCF4 \uC800\uC7A5 \uD6C4 \uC785\uC7A5</button><button class="login-back" type="button" data-login-back="roles">\uB2E4\uB978 \uC5ED\uD560 \uC120\uD0DD</button></form>';
       document.querySelector('#login-title').textContent = '\uD559\uC0DD \uC815\uBCF4';
       document.querySelector('#login-description').textContent = '\uD544\uC694\uD55C \uC778\uC801\uC0AC\uD56D\uC744 \uC785\uB825\uD574 \uC8FC\uC138\uC694.';
     }
@@ -1192,10 +1120,9 @@
       document.querySelector('#login-choices').classList.add('view-hidden');
       document.querySelector('#student-login-panel').classList.add('view-hidden');
       document.querySelector('#staff-code-form').classList.remove('view-hidden');
-      document.querySelector('#staff-school-field').innerHTML = '<label class="field-label" for="staff-school">\uC18C\uC18D \uD559\uAD50</label><input id="staff-school" type="text" maxlength="80" autocomplete="organization" required>';
-      document.querySelector('#login-title').textContent = '\uC0AC\uAC10 \uAD00\uB9AC\uC790 \uB85C\uADF8\uC778';
-      document.querySelector('#login-description').textContent = '\uD559\uAD50\uC640 \uC0AC\uAC10 \uC811\uADFC \uCF54\uB4DC\uB97C \uC785\uB825\uD574 \uC8FC\uC138\uC694.';
-      document.querySelector('#staff-access-code').value = '';
+      document.querySelector('#staff-school-field').innerHTML = '';
+      document.querySelector('#login-title').textContent = '사감 관리자 로그인';
+      document.querySelector('#login-description').textContent = '사감 명단에 등록된 Google 계정으로 로그인해 주세요.';
       document.querySelector('#staff-code-error').textContent = '';
     }
     function showModeChoices() {
@@ -1233,7 +1160,7 @@
     }
     function resetUpload() {
       uploadBox.classList.remove('has-image'); photoInput.value = ''; imageData = '';
-      uploadContent.innerHTML = '<svg viewBox=\"0 0 24 24\" fill=\"none\" aria-hidden=\"true\"><path d=\"M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg><strong>사진을 첨부해 주세요</strong><small>JPG, PNG, WEBP - 최대 2MB</small>';
+      uploadContent.innerHTML = '<svg viewBox=\"0 0 24 24\" fill=\"none\" aria-hidden=\"true\"><path d=\"M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg><strong>사진을 첨부해 주세요</strong><small>JPG, PNG, WEBP - 자동으로 작게 줄여서 올라가요</small>';
     }
     function resetVideoAttachment() {
       if (reportVideoPreviewUrl) URL.revokeObjectURL(reportVideoPreviewUrl);
@@ -1241,15 +1168,32 @@
       reportVideoInput.value = '';
       document.querySelector('#report-video-preview').replaceChildren();
     }
-    photoInput.addEventListener('change', function() {
+    function compressImage(file) {
+      return new Promise(function(resolve, reject) {
+        const url = URL.createObjectURL(file), img = new Image();
+        img.onload = function() {
+          const scale = Math.min(1, 900 / Math.max(img.width, img.height));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.round(img.width * scale); canvas.height = Math.round(img.height * scale);
+          canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+          URL.revokeObjectURL(url);
+          let quality = 0.72, data = canvas.toDataURL('image/jpeg', quality);
+          while (data.length > 600000 && quality > 0.3) { quality -= 0.1; data = canvas.toDataURL('image/jpeg', quality); }
+          resolve(data);
+        };
+        img.onerror = function() { URL.revokeObjectURL(url); reject(new Error('사진을 읽지 못했어요.')); };
+        img.src = url;
+      });
+    }
+    photoInput.addEventListener('change', async function() {
       const file = photoInput.files && photoInput.files[0]; if (!file) return;
       if (!['image/jpeg','image/png','image/webp'].includes(file.type)) { resetUpload(); toast('이미지 파일만 첨부할 수 있어요.'); return; }
-      if (file.size > 2*1024*1024) { resetUpload(); toast('사진은 2MB 이하로 첨부해 주세요.'); return; }
-      uploadBox.classList.add('has-image');
-      const reader = new FileReader();
-      reader.onload = function() { imageData = String(reader.result || ''); uploadContent.innerHTML = '<img src=\"' + imageData + '\" alt=\"첨부 사진\"><span class=\"file-name\">' + esc(file.name) + '</span>'; };
-      reader.onerror = function() { imageData = ''; toast('사진을 읽지 못했어요.'); };
-      reader.readAsDataURL(file);
+      if (file.size > 10*1024*1024) { resetUpload(); toast('사진은 10MB 이하로 첨부해 주세요.'); return; }
+      try {
+        imageData = await compressImage(file);
+        uploadBox.classList.add('has-image');
+        uploadContent.innerHTML = '<img src=\"' + imageData + '\" alt=\"첨부 사진\"><span class=\"file-name\">' + esc(file.name) + '</span>';
+      } catch (error) { resetUpload(); toast(error.message); }
     });
     reportVideoInput.addEventListener('change', async function() {
       const file = reportVideoInput.files && reportVideoInput.files[0];
@@ -1282,6 +1226,8 @@
       sessionStore.removeItem(STAFF_SCHOOL_KEY);
       sessionStore.removeItem(STAFF_CODE_KEY);
       sessionStore.removeItem(LOGIN_ROLE_KEY);
+      stopSync(); reportCache = []; ownerId = ''; STUDENTS = [];
+      auth.signOut().catch(function() {});
       document.body.classList.remove('authenticated');
       document.querySelector('#account-switch').classList.add('view-hidden');
       document.querySelector('#login-gate').classList.remove('view-hidden');
@@ -1305,74 +1251,68 @@
         building:document.querySelector('#student-building').value,
         room:document.querySelector('#student-room').value.trim()
       };
-      profile.id = await stableStudentId(profile);
-      ownerId = profile.id;
-      sessionStore.setItem(STUDENT_PROFILE_KEY, JSON.stringify(profile));
-      STUDENTS[0] = {id:ownerId,name:profile.name,school:profile.school};
-      document.querySelector('#reporter').value = profile.name;
-      completeLogin('student');
+      const button = event.target.querySelector('button[type="submit"]');
+      button.disabled = true;
+      try {
+        if (!auth.currentUser || !auth.currentUser.isAnonymous) await auth.signInAnonymously();
+        ownerId = auth.currentUser.uid;
+        profile.id = ownerId;
+        await db.collection('students').doc(ownerId).set(Object.assign({}, profile, { updatedAt: new Date().toISOString() }));
+        sessionStore.setItem(STUDENT_PROFILE_KEY, JSON.stringify(profile));
+        document.querySelector('#reporter').value = profile.name;
+        completeLogin('student');
+      } catch (error) {
+        console.error(error);
+        toast('정보를 저장하지 못했어요. 인터넷 연결을 확인해 주세요.');
+      } finally { button.disabled = false; }
     });
     document.querySelector('#staff-code-form').addEventListener('submit', async function(event) {
       event.preventDefault();
-      const input = document.querySelector('#staff-access-code');
-      const school = document.querySelector('#staff-school').value.trim();
+      const errorBox = document.querySelector('#staff-code-error');
+      errorBox.textContent = '';
       try {
-        const response = await fetch(apiUrl('/api/staff-auth'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({school:school,code:input.value.trim()})});
-        if (!response.ok) throw new Error('\uCF54\uB4DC\uAC00 \uC77C\uCE58\uD558\uC9C0 \uC54A\uC544\uC694. \uB2E4\uC2DC \uD655\uC778\uD574 \uC8FC\uC138\uC694.');
+        const result = await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
+        const email = result.user && result.user.email;
+        const staffDoc = email ? await db.collection('staff').doc(email).get() : null;
+        if (!staffDoc || !staffDoc.exists) {
+          await auth.signOut();
+          errorBox.textContent = '사감 명단에 없는 계정이에요. 등록된 Google 계정으로 다시 로그인해 주세요.';
+          return;
+        }
+        sessionStore.setItem(STAFF_SCHOOL_KEY, staffDoc.data().school || DEMO_SCHOOL);
+        completeLogin('staff');
       } catch (error) {
-        document.querySelector('#staff-code-error').textContent = error.message || '\uC11C\uBC84\uC5D0 \uC5F0\uACB0\uD560 \uC218 \uC5C6\uC5B4\uC694.';
-        input.focus();
-        return;
+        console.error(error);
+        errorBox.textContent = error && error.code === 'auth/popup-closed-by-user' ? '로그인 창이 닫혔어요. 다시 시도해 주세요.' : '로그인하지 못했어요. 잠시 후 다시 시도해 주세요.';
       }
-      sessionStore.setItem(STAFF_CODE_KEY, input.value.trim());
-      sessionStore.setItem(STAFF_SCHOOL_KEY, school);
-      completeLogin('staff');
     });
     document.querySelector('#student-reports-tab').addEventListener('click', function() { setStudentTab('reports'); });
     document.querySelector('#student-fact-tab').addEventListener('click', function() { setStudentTab('fact'); });
     form.addEventListener('submit', async function(event) {
       event.preventDefault(); if (!form.reportValidity()) return;
       const profile = studentProfile();
-      if (!profile || !profile.school) { showStudentLogin(); return; }
-      const videoFile = reportVideoInput.files && reportVideoInput.files[0];
+      if (!profile || !profile.school || !ownerId) { showStudentLogin(); return; }
       const submitButton = document.querySelector('#submit-button');
-      if (videoFile && (!(videoFile.type === 'video/mp4' || /\.mp4$/i.test(videoFile.name)) || videoFile.size > 12 * 1024 * 1024)) { toast('영상은 MP4, 12MB 이하 파일만 첨부할 수 있어요.'); return; }
       submitButton.disabled = true;
+      const now = new Date().toISOString();
       const report = {
-        id:crypto.randomUUID ? crypto.randomUUID() : 'report-' + Date.now(),
-        reporterId:ownerId, reporterName:document.querySelector('#reporter').value.trim(),
-        school:profile.school,
-        date:dateInput.value, time:timeInput.value, place:document.querySelector('#place').value,
-        item:document.querySelector('#item').value.trim(), photo:imageData,
-        status:STEPS[0], createdAt:new Date().toISOString()
+        id: crypto.randomUUID ? crypto.randomUUID() : 'report-' + Date.now(),
+        reporterId: ownerId, reporterName: document.querySelector('#reporter').value.trim(),
+        school: profile.school,
+        date: dateInput.value, time: timeInput.value, place: document.querySelector('#place').value,
+        item: document.querySelector('#item').value.trim(), photo: imageData || '',
+        status: STEPS[0], createdAt: now, updatedAt: now,
+        auditTrail: [{ action: '학생이 신고를 접수', at: now }]
       };
       try {
-        const all = reports(); all.unshift(report); localStore.setItem(KEY, JSON.stringify(all));
-        audit(report.id, '학생이 신고를 접수');
+        await db.collection('reports').doc(report.id).set(report);
         const seen = mapValue(STUDENT_SEEN_KEY); seen[report.id] = STEPS[0]; localStore.setItem(STUDENT_SEEN_KEY, JSON.stringify(seen));
-      } catch { toast(COPY.storage); submitButton.disabled = false; return; }
-      let submitMessage = '';
-      try {
-        const synced = await pushSharedReport(report);
-        if (videoFile && synced) {
-          try {
-            const response = await fetch(apiUrl('/api/reports/' + encodeURIComponent(report.id) + '/video'), {
-              method:'PUT', headers:{'Content-Type':videoFile.type || 'video/mp4','x-dormguard-owner-id':ownerId,'x-dormguard-school':profile.school,'x-dormguard-file-name':encodeURIComponent(videoFile.name)}, body:videoFile
-            });
-            const payload = await response.json().catch(()=>({}));
-            if (!response.ok || !payload.video) throw new Error(payload.error || '영상 업로드를 완료하지 못했어요.');
-            report.video = payload.video; report.updatedAt = new Date().toISOString();
-            const current = reports(), index = current.findIndex(function(item) { return item.id === report.id; });
-            if (index >= 0) { current[index] = report; localStore.setItem(KEY, JSON.stringify(current)); }
-            submitMessage = '신고와 영상이 서버에 저장됐어요.';
-          } catch (error) { submitMessage = '신고는 저장했지만 영상 첨부에 실패했어요: ' + (error.message || '다시 확인해 주세요.'); }
-        } else if (videoFile) submitMessage = '신고는 저장했지만 서버 연결이 안 되어 영상은 올리지 못했어요.';
-        else submitMessage = synced ? '신고가 서버에 저장됐어요.' : '신고는 이 기기에 저장했어요. 서버 연결을 확인해 주세요.';
-        form.reset(); resetUpload(); resetVideoAttachment(); setDefaults(); renderStudent();
-        toast(submitMessage);
+        form.reset(); resetUpload(); setDefaults();
+        document.querySelector('#reporter').value = profile.name;
+        toast('신고가 접수됐어요.');
       } catch (error) {
-        toast(error.message || '신고는 저장했지만 영상 첨부를 완료하지 못했어요.');
-        renderStudent();
+        console.error(error);
+        toast('신고를 저장하지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.');
       } finally { submitButton.disabled = false; }
     });
     window.addEventListener('storage', function(event) {
@@ -1386,19 +1326,32 @@
         }
       }
     });
-    seedAndMigrate();
-    recordSnapshot(reports());
     setDefaults();
     setupText();
     setStudentTab(studentTab);
-    const savedRole = sessionStore.getItem(LOGIN_ROLE_KEY);
-    const savedProfileReady = savedRole === 'student' ? Boolean(sessionStore.getItem(STUDENT_PROFILE_KEY)) : savedRole === 'staff' ? Boolean(sessionStore.getItem(STAFF_SCHOOL_KEY)) : false;
-    if (savedProfileReady) {
-      completeLogin(savedRole);
-    } else {
-      setMode('student');
-      showModeChoices();
-    }
+    showModeChoices();
+    const stopBootWatch = auth.onAuthStateChanged(async function(user) {
+      stopBootWatch();
+      try {
+        if (user && user.isAnonymous) {
+          const snap = await db.collection('students').doc(user.uid).get();
+          if (snap.exists) {
+            ownerId = user.uid;
+            sessionStore.setItem(STUDENT_PROFILE_KEY, JSON.stringify(Object.assign({}, snap.data(), { id: user.uid })));
+            document.querySelector('#reporter').value = snap.data().name || '';
+            completeLogin('student');
+            return;
+          }
+        } else if (user && user.email) {
+          const staffDoc = await db.collection('staff').doc(user.email).get();
+          if (staffDoc.exists) {
+            sessionStore.setItem(STAFF_SCHOOL_KEY, staffDoc.data().school || DEMO_SCHOOL);
+            completeLogin('staff');
+            return;
+          }
+        }
+      } catch (error) { console.error(error); }
+    });
     document.addEventListener('pointermove', function(event) {
       if (event.pointerType === 'touch') return;
       const surface = event.target.closest('.card,.detail-card,.login-card,.case');
